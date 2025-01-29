@@ -24,16 +24,16 @@ DEFAULT_PDF = "documents/medioambiente.pdf"
 def get_or_create_faiss_index(pdf_path, index_path, embeddings_model):
     try:
         if os.path.exists(index_path):
-            st.info("Cargando índice FAISS desde disco...")
+            st.info("Cargando datos...")
             return FAISS.load_local(
                 index_path,
                 HuggingFaceEmbeddings(model_name=embeddings_model),
                 allow_dangerous_deserialization=True
             )
         
-        st.info("Generando nuevo índice FAISS...")
+        st.info("Generando datos...")
         if not os.path.exists(pdf_path):
-            raise FileNotFoundError(f"Archivo PDF no encontrado: {pdf_path}")
+            raise FileNotFoundError("Error en el procesamiento de la información.")
         
         loader = PyPDFLoader(pdf_path)
         documents = loader.load()
@@ -45,35 +45,37 @@ def get_or_create_faiss_index(pdf_path, index_path, embeddings_model):
         vectorstore = FAISS.from_documents(split_docs, embeddings)
         
         vectorstore.save_local(index_path)
-        st.success("Índice FAISS generado correctamente!")
+        st.success("Datos procesados correctamente!")
         return vectorstore
     
     except Exception as e:
-        st.error(f"Error procesando PDF: {str(e)}")
+        st.error("Error al procesar la información.")
         raise
 
 def main():
-    st.title("🧠 Chatbot Inteligente con RAG")
+    st.set_page_config(page_title="EcoAsistence", page_icon="🌿", layout="wide")
     
     with st.sidebar:
+        st.markdown("""
+            <h2 style='text-align: left; font-family: Arial, sans-serif; color: #B0B0B0;'>EcoAsistence</h2>
+        """, unsafe_allow_html=True)
         st.header("⚙️ Configuración")
         bot_name = st.text_input("Nombre del Bot:", value="EcoAsistente")
         temperature = st.slider("Nivel de Creatividad:", 0.0, 1.0, 0.7)
         llm.temperature = temperature
     
-    if not os.path.exists(DEFAULT_PDF):
-        st.error(f"🔍 Por favor coloca tu PDF en: {os.path.abspath(DEFAULT_PDF)}")
-        return
+    st.title("🧠 Chatbot Inteligente con RAG")
     
-    if "chat_history" not in st.session_state:
-        st.session_state.chat_history = []
+    if not os.path.exists(DEFAULT_PDF):
+        st.error("Error en la carga de datos.")
+        return
     
     try:
         if "retriever" not in st.session_state:
             vectorstore = get_or_create_faiss_index(DEFAULT_PDF, INDEX_PATH, EMBEDDINGS_MODEL)
             st.session_state.retriever = vectorstore.as_retriever(search_type="mmr", search_kwargs={"k": 4})
     except Exception as e:
-        st.error(f"🚨 Error inicial: {str(e)}")
+        st.error("Error en la configuración del asistente.")
         return
     
     system_prompt = f"""
@@ -97,9 +99,12 @@ def main():
         retriever=st.session_state.retriever,
         combine_docs_chain=qa_chain,
         question_generator=question_generator,
-        return_source_documents=True,
+        return_source_documents=False,
         verbose=False
     )
+    
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
     
     user_input = st.chat_input("Escribe tu mensaje aquí...")
     
@@ -116,24 +121,14 @@ def main():
                 })
                 
                 answer = response.get("answer", "Lo siento, no encontré una respuesta adecuada.")
-                sources = response.get("source_documents", [])
-                
-                if not sources:
-                    answer += "\n\n(Nota: Esta respuesta proviene del conocimiento general del modelo.)"
-                
                 st.session_state.chat_history.append(HumanMessage(content=user_input))
                 st.session_state.chat_history.append(AIMessage(content=answer))
                 
                 with st.chat_message("ai"):
                     st.write(answer)
-                
-                if sources:
-                    with st.expander("📄 Documentos de referencia utilizados"):
-                        for doc in sources:
-                            st.markdown(f"**Página {doc.metadata['page'] + 1}**  \n{doc.page_content[:250]}...")
-                    
+        
         except Exception as e:
-            st.error(f"⚠️ Error al procesar tu consulta: {str(e)}")
+            st.error("⚠️ Error al procesar tu consulta.")
     
     for msg in st.session_state.chat_history:
         with st.chat_message("human" if isinstance(msg, HumanMessage) else "ai"):
@@ -141,3 +136,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
