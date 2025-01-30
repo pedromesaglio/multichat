@@ -57,14 +57,28 @@ def main():
     
     with st.sidebar:
         st.markdown("""
-            <h2 style='text-align: left; font-family: Arial, sans-serif; color: #B0B0B0;'>EcoAsistence</h2>
+            <h2 style='text-align: left; font-family: Arial, sans-serif; color: #B0B0B0; font-weight: 600; margin-top: -10px;'>EcoAsistence</h2>
         """, unsafe_allow_html=True)
+        
+        if "chat_sessions" not in st.session_state:
+            st.session_state.chat_sessions = {}
+        
+        if "current_chat" not in st.session_state:
+            st.session_state.current_chat = None
+        
+        new_chat = st.button("🆕 Nuevo Chat")
+        if new_chat:
+            st.session_state.current_chat = None
+        
+        if st.session_state.chat_sessions:
+            chat_selection = st.radio("Chats", list(st.session_state.chat_sessions.keys()))
+            st.session_state.current_chat = chat_selection
+        
         st.header("⚙️ Configuración")
-        bot_name = st.text_input("Nombre del Bot:", value="EcoAsistente")
         temperature = st.slider("Nivel de Creatividad:", 0.0, 1.0, 0.7)
         llm.temperature = temperature
     
-    st.title("🧠 Chatbot Inteligente con RAG")
+    st.title("🧠 Chatbot Inteligente con RAG y respuestas generales")
     
     if not os.path.exists(DEFAULT_PDF):
         st.error("Error en la carga de datos.")
@@ -79,7 +93,7 @@ def main():
         return
     
     system_prompt = f"""
-    Eres {bot_name}, un asistente especializado. Sigue estas reglas:
+    Eres EcoAsistence, un asistente especializado. Sigue estas reglas:
     1. Usa información del contexto cuando esté disponible
     2. Si no hay contexto relevante, responde con tu conocimiento general
     3. Sé conciso (máximo 3 oraciones)
@@ -103,9 +117,6 @@ def main():
         verbose=False
     )
     
-    if "chat_history" not in st.session_state:
-        st.session_state.chat_history = []
-    
     user_input = st.chat_input("Escribe tu mensaje aquí...")
     
     if user_input:
@@ -117,12 +128,18 @@ def main():
             with st.spinner("🔍 Analizando y generando respuesta..."):
                 response = chain({
                     "question": user_input,
-                    "chat_history": [msg.content for msg in st.session_state.chat_history]
+                    "chat_history": [] if not st.session_state.current_chat else [msg.content for msg in st.session_state.chat_sessions[st.session_state.current_chat]]
                 })
                 
                 answer = response.get("answer", "Lo siento, no encontré una respuesta adecuada.")
-                st.session_state.chat_history.append(HumanMessage(content=user_input))
-                st.session_state.chat_history.append(AIMessage(content=answer))
+                
+                if st.session_state.current_chat is None:
+                    chat_title = user_input.split()[0] if user_input else "Nuevo Chat"
+                    st.session_state.current_chat = chat_title
+                    st.session_state.chat_sessions[chat_title] = []
+                
+                st.session_state.chat_sessions[st.session_state.current_chat].append(HumanMessage(content=user_input))
+                st.session_state.chat_sessions[st.session_state.current_chat].append(AIMessage(content=answer))
                 
                 with st.chat_message("ai"):
                     st.write(answer)
@@ -130,10 +147,10 @@ def main():
         except Exception as e:
             st.error("⚠️ Error al procesar tu consulta.")
     
-    for msg in st.session_state.chat_history:
-        with st.chat_message("human" if isinstance(msg, HumanMessage) else "ai"):
-            st.write(msg.content)
+    if st.session_state.current_chat:
+        for msg in st.session_state.chat_sessions[st.session_state.current_chat]:
+            with st.chat_message("human" if isinstance(msg, HumanMessage) else "ai"):
+                st.write(msg.content)
 
 if __name__ == "__main__":
     main()
-
