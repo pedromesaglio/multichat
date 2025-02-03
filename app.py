@@ -142,7 +142,7 @@ def main():
                 st.session_state.chat_sessions[st.session_state.current_chat].append(AIMessage(content=answer))
                 
                 with st.chat_message("ai"):
-                    st.write(answer)
+                    st.markdown(f"<p style='color:#888; font-size:14px;'>{answer}</p>", unsafe_allow_html=True)
         
         except Exception as e:
             st.error("⚠️ Error al procesar tu consulta.")
