@@ -78,7 +78,7 @@ def main():
         temperature = st.slider("Nivel de Creatividad:", 0.0, 1.0, 0.7)
         llm.temperature = temperature
     
-    st.title("🧠 Chatbot Inteligente con RAG y respuestas generales")
+    st.title("🧠 Chatbot Inteligente con RAG")
     
     if not os.path.exists(DEFAULT_PDF):
         st.error("Error en la carga de datos.")
