@@ -1,156 +1,257 @@
 import streamlit as st
 from langchain_community.llms import Ollama
 from langchain_core.messages import HumanMessage, AIMessage
-from langchain.vectorstores import FAISS
-from langchain.embeddings import HuggingFaceEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain.chains import ConversationalRetrievalChain, LLMChain
-from langchain.document_loaders import PyPDFLoader
-from langchain.text_splitter import CharacterTextSplitter
+from langchain_community.document_loaders import PyPDFLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.prompts import PromptTemplate
-from langchain.chains.question_answering import load_qa_chain
-from langchain.chains.conversational_retrieval.prompts import CONDENSE_QUESTION_PROMPT
 import os
+import time
+import hashlib
 
-llm = Ollama(
-    model="deepseek-r1:8b",
-    temperature=0.7,
-    system="Responde como un experto amigable con logica basica y cuando lo necesites usando el contexto proporcionado."
-)
-
+# Configuración inicial
 INDEX_PATH = os.path.abspath("./faiss_index")
 EMBEDDINGS_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 DEFAULT_PDF = "documents/medioambiente.pdf"
+CHAT_HISTORY_LIMIT = 20
+
+def get_pdf_hash(pdf_path):
+    """Calcula el hash del PDF para detectar cambios"""
+    with open(pdf_path, "rb") as f:
+        file_hash = hashlib.md5(f.read()).hexdigest()
+    return file_hash
 
 def get_or_create_faiss_index(pdf_path, index_path, embeddings_model):
     try:
-        if os.path.exists(index_path):
-            st.info("Cargando datos...")
-            return FAISS.load_local(
-                index_path,
-                HuggingFaceEmbeddings(model_name=embeddings_model),
-                allow_dangerous_deserialization=True
-            )
+        current_hash = get_pdf_hash(pdf_path) if os.path.exists(pdf_path) else ""
+        hash_file = os.path.join(index_path, "pdf_hash.md5")
         
-        st.info("Generando datos...")
-        if not os.path.exists(pdf_path):
-            raise FileNotFoundError("Error en el procesamiento de la información.")
+        if os.path.exists(index_path) and os.path.exists(hash_file):
+            with open(hash_file, "r") as f:
+                stored_hash = f.read()
+            
+            if stored_hash == current_hash:
+                st.info("Cargando datos desde el índice existente...")
+                return FAISS.load_local(
+                    index_path,
+                    HuggingFaceEmbeddings(model_name=embeddings_model),
+                    allow_dangerous_deserialization=True
+                )
         
+        st.info("Procesando documentos y generando nuevo índice...")
         loader = PyPDFLoader(pdf_path)
         documents = loader.load()
         
-        text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=200, separator="\n")
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1000,
+            chunk_overlap=200,
+            separators=["\n\n", "\n", " ", ""]
+        )
         split_docs = text_splitter.split_documents(documents)
         
         embeddings = HuggingFaceEmbeddings(model_name=embeddings_model)
         vectorstore = FAISS.from_documents(split_docs, embeddings)
         
         vectorstore.save_local(index_path)
-        st.success("Datos procesados correctamente!")
+        with open(os.path.join(index_path, "pdf_hash.md5"), "w") as f:
+            f.write(current_hash)
+        
+        st.success("Índice generado exitosamente!")
         return vectorstore
     
     except Exception as e:
-        st.error("Error al procesar la información.")
+        st.error(f"Error en el procesamiento de documentos: {str(e)}")
         raise
 
-def main():
-    st.set_page_config(page_title="EcoAsistence", page_icon="🌿", layout="wide")
+def init_session_state():
+    if "chat_sessions" not in st.session_state:
+        st.session_state.chat_sessions = {}
     
+    if "current_chat" not in st.session_state:
+        st.session_state.current_chat = None
+    
+    if "llm_config" not in st.session_state:
+        st.session_state.llm_config = {
+            "temperature": 0.7,
+            "system_prompt": """Eres EcoAsistence, un asistente especializado. Sigue estas reglas:
+1. Usa información del contexto cuando esté disponible
+2. Si no hay contexto relevante, responde con conocimiento general
+3. Sé conciso (máximo 3 oraciones)
+4. Haz preguntas de seguimiento cuando sea relevante
+5. Mantén un tono profesional pero amigable"""
+        }
+
+def setup_sidebar():
     with st.sidebar:
         st.markdown("""
-            <h2 style='text-align: left; font-family: Arial, sans-serif; color: #B0B0B0; font-weight: 600; margin-top: -10px;'>EcoAsistence</h2>
+            <h2 style='text-align: center; color: #4CAF50; margin-bottom: 30px;'>
+            🌿 EcoAsistence
+            </h2>
         """, unsafe_allow_html=True)
         
-        if "chat_sessions" not in st.session_state:
-            st.session_state.chat_sessions = {}
-        
-        if "current_chat" not in st.session_state:
-            st.session_state.current_chat = None
-        
-        new_chat = st.button("🆕 Nuevo Chat")
-        if new_chat:
-            st.session_state.current_chat = None
+        # Gestión de chats
+        st.subheader("💬 Chats")
+        if st.button("➕ Nuevo Chat", use_container_width=True):
+            new_chat_id = f"Chat_{int(time.time())}"
+            st.session_state.current_chat = new_chat_id
+            st.session_state.chat_sessions[new_chat_id] = []
         
         if st.session_state.chat_sessions:
-            chat_selection = st.radio("Chats", list(st.session_state.chat_sessions.keys()))
-            st.session_state.current_chat = chat_selection
+            selected_chat = st.selectbox(
+                "Chats disponibles:",
+                options=list(st.session_state.chat_sessions.keys()),
+                index=0,
+                key="chat_selector"
+            )
+            st.session_state.current_chat = selected_chat
         
-        st.header("⚙️ Configuración")
-        temperature = st.slider("Nivel de Creatividad:", 0.0, 1.0, 0.7)
-        llm.temperature = temperature
+        # Configuración
+        st.subheader("⚙️ Configuración")
+        st.session_state.llm_config["temperature"] = st.slider(
+            "Nivel de Creatividad:",
+            0.0, 1.0, 0.7,
+            help="Controla la aleatoriedad de las respuestas (0 = preciso, 1 = creativo)"
+        )
+
+def render_chat_messages():
+    if st.session_state.current_chat:
+        messages = st.session_state.chat_sessions[st.session_state.current_chat]
+        for msg in messages[-CHAT_HISTORY_LIMIT:]:
+            with st.chat_message("user" if isinstance(msg, HumanMessage) else "ai"):
+                st.markdown(f"""
+                    <div style='padding: 12px;
+                        border-radius: 8px;
+                        background-color: #000000;
+                        color: #FFFFFF;
+                        margin: 8px 0;
+                        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                        border-left: { "3px solid #4CAF50" if isinstance(msg, AIMessage) else "none" }'>
+                        {msg.content}
+                    </div>
+                """, unsafe_allow_html=True)
+
+def main():
+    st.set_page_config(
+        page_title="EcoAsistence",
+        page_icon="🌿",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
     
-    st.title("🧠 Chatbot Inteligente con RAG")
+    # CSS personalizado para el input
+    st.markdown("""
+        <style>
+        .stChatInput textarea {
+            color: #FFFFFF !important;
+            background-color: #000000 !important;
+        }
+        .stChatInput button {
+            color: #000000 !important;
+            background-color: #4CAF50 !important;
+        }
+        </style>
+    """, unsafe_allow_html=True)
     
+    init_session_state()
+    setup_sidebar()
+    
+    st.title("🌍 Asistente de Medio Ambiente Inteligente")
+    st.caption("Pregunta cualquier cosa sobre documentos medioambientales")
+    
+    # Verificar existencia del PDF
     if not os.path.exists(DEFAULT_PDF):
-        st.error("Error en la carga de datos.")
+        st.error("Error: Archivo PDF no encontrado en la ruta especificada")
         return
     
+    # Inicializar vectorstore
     try:
         if "retriever" not in st.session_state:
-            vectorstore = get_or_create_faiss_index(DEFAULT_PDF, INDEX_PATH, EMBEDDINGS_MODEL)
-            st.session_state.retriever = vectorstore.as_retriever(search_type="mmr", search_kwargs={"k": 4})
+            with st.spinner("Inicializando sistema..."):
+                vectorstore = get_or_create_faiss_index(
+                    DEFAULT_PDF, INDEX_PATH, EMBEDDINGS_MODEL
+                )
+                st.session_state.retriever = vectorstore.as_retriever(
+                    search_type="mmr",
+                    search_kwargs={"k": 4, "fetch_k": 10}
+                )
     except Exception as e:
-        st.error("Error en la configuración del asistente.")
+        st.error(f"Error de inicialización: {str(e)}")
         return
     
-    system_prompt = f"""
-    Eres EcoAsistence, un asistente especializado. Sigue estas reglas:
-    1. Usa información del contexto cuando esté disponible
-    2. Si no hay contexto relevante, responde con tu conocimiento general
-    3. Sé conciso (máximo 3 oraciones)
-    4. Haz preguntas de seguimiento cuando sea relevante
-    5. Mantén un tono profesional pero amigable
-    """
-    
-    qa_prompt = PromptTemplate(
-        input_variables=["context", "question"],
-        template=f"{system_prompt}\nContexto: {{context}}\nPregunta: {{question}}\nRespuesta:"
-    )
-    
-    qa_chain = load_qa_chain(llm, chain_type="stuff", prompt=qa_prompt)
-    question_generator = LLMChain(llm=llm, prompt=CONDENSE_QUESTION_PROMPT, verbose=False)
-    
-    chain = ConversationalRetrievalChain(
-        retriever=st.session_state.retriever,
-        combine_docs_chain=qa_chain,
-        question_generator=question_generator,
-        return_source_documents=False,
-        verbose=False
-    )
-    
-    user_input = st.chat_input("Escribe tu mensaje aquí...")
-    
+    # Inicializar cadena conversacional
+    if "chain" not in st.session_state:
+        llm = Ollama(
+            model="deepseek-r1:8b",
+            temperature=st.session_state.llm_config["temperature"],
+            system=st.session_state.llm_config["system_prompt"]
+        )
+        
+        qa_prompt = PromptTemplate(
+            input_variables=["system_prompt", "context", "question"],
+            template="""
+            {system_prompt}
+            
+            Contexto relevante:
+            {context}
+            
+            Pregunta: {question}
+            Respuesta útil:
+            """.strip()
+        )
+        
+        st.session_state.chain = ConversationalRetrievalChain.from_llm(
+            llm=llm,
+            retriever=st.session_state.retriever,
+            chain_type="stuff",
+            combine_docs_chain_kwargs={
+                "prompt": qa_prompt,
+                "document_prompt": PromptTemplate(
+                    input_variables=["page_content"],
+                    template="{page_content}"
+                )
+            },
+            return_source_documents=True,
+            verbose=False
+        )
+
+    # Manejar entrada de usuario
+    user_input = st.chat_input("Escribe tu pregunta sobre medio ambiente...")
     if user_input:
         if user_input.lower() in ["salir", "adios", "exit"]:
-            st.success("¡Gracias por charlar! Hasta pronto. 👋")
+            st.success("¡Gracias por usar EcoAsistence! Hasta pronto. 🌱")
             st.stop()
         
         try:
+            # Agregar mensaje de usuario al historial
+            human_msg = HumanMessage(content=user_input)
+            if st.session_state.current_chat is None:
+                st.session_state.current_chat = f"Chat_{int(time.time())}"
+                st.session_state.chat_sessions[st.session_state.current_chat] = []
+            
+            st.session_state.chat_sessions[st.session_state.current_chat].append(human_msg)
+            
             with st.spinner("🔍 Analizando y generando respuesta..."):
-                response = chain({
+                response = st.session_state.chain({
                     "question": user_input,
-                    "chat_history": [] if not st.session_state.current_chat else [msg.content for msg in st.session_state.chat_sessions[st.session_state.current_chat]]
+                    "system_prompt": st.session_state.llm_config["system_prompt"],
+                    "chat_history": [
+                        (msg.content, AIMessage(content=msg.content).content) 
+                        for msg in st.session_state.chat_sessions[st.session_state.current_chat] 
+                        if isinstance(msg, AIMessage)
+                    ]
                 })
                 
-                answer = response.get("answer", "Lo siento, no encontré una respuesta adecuada.")
-                
-                if st.session_state.current_chat is None:
-                    chat_title = user_input.split()[0] if user_input else "Nuevo Chat"
-                    st.session_state.current_chat = chat_title
-                    st.session_state.chat_sessions[chat_title] = []
-                
-                st.session_state.chat_sessions[st.session_state.current_chat].append(HumanMessage(content=user_input))
-                st.session_state.chat_sessions[st.session_state.current_chat].append(AIMessage(content=answer))
-                
-                with st.chat_message("ai"):
-                    st.markdown(f"<p style='color:#888; font-size:14px;'>{answer}</p>", unsafe_allow_html=True)
+                answer = response.get("answer", "No pude encontrar una respuesta adecuada.")
+                ai_msg = AIMessage(content=answer)
+                st.session_state.chat_sessions[st.session_state.current_chat].append(ai_msg)
         
         except Exception as e:
-            st.error("⚠️ Error al procesar tu consulta.")
+            st.error(f"Error al procesar la consulta: {str(e)}")
+            st.session_state.chat_sessions[st.session_state.current_chat].pop()
     
-    if st.session_state.current_chat:
-        for msg in st.session_state.chat_sessions[st.session_state.current_chat]:
-            with st.chat_message("human" if isinstance(msg, HumanMessage) else "ai"):
-                st.write(msg.content)
+    render_chat_messages()
 
 if __name__ == "__main__":
     main()
